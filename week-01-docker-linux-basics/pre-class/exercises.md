@@ -85,8 +85,8 @@ Docker version 24.0.7, build afdd53b
 ```
 
 ### Self-check
-- [ ] Command runs without error
-- [ ] You see a version number
+- [X] Command runs without error
+- [X] You see a version number
 
 ### Step 2.2: Run the hello-world container
 
@@ -105,8 +105,8 @@ This message shows that your installation appears to be working correctly.
 ```
 
 ### Self-check
-- [ ] Docker downloaded the image automatically
-- [ ] You see "Hello from Docker!"
+- [X] Docker downloaded the image automatically
+- [X] You see "Hello from Docker!"
 
 ### What just happened?
 
@@ -174,10 +174,10 @@ exit
 You're back on your own computer.
 
 ### Self-check
-- [ ] You saw the `root@...` prompt inside the container
-- [ ] `pwd` showed `/`
-- [ ] `cat /etc/os-release` showed Ubuntu information
-- [ ] `exit` returned you to your normal terminal
+- [X] You saw the `root@...` prompt inside the container
+- [X] `pwd` showed `/`
+- [X] `cat /etc/os-release` showed Ubuntu information
+- [X] `exit` returned you to your normal terminal
 
 ---
 
@@ -249,10 +249,10 @@ docker ps
 The container should no longer appear (it's stopped, not removed).
 
 ### Self-check
-- [ ] nginx container started successfully
-- [ ] You saw the nginx welcome page in your browser
-- [ ] `docker ps` showed the running container
-- [ ] You successfully stopped the container
+- [X] nginx container started successfully
+- [X] You saw the nginx welcome page in your browser
+- [X] `docker ps` showed the running container
+- [X] You successfully stopped the container
 
 ---
 
@@ -285,8 +285,8 @@ docker container prune
 Type `y` to confirm.
 
 ### Self-check
-- [ ] You can list all containers with `docker ps -a`
-- [ ] You successfully removed containers
+- [X] You can list all containers with `docker ps -a`
+- [X] You successfully removed containers
 
 ---
 
@@ -398,11 +398,11 @@ Hi username! You've successfully authenticated, but GitHub does not provide shel
 ```
 
 ### Self-check
-- [ ] I have a GitHub account
-- [ ] Git is installed (`git --version` works)
-- [ ] I generated an SSH key
-- [ ] I added my public key to GitHub
-- [ ] `ssh -T git@github.com` shows my username
+- [X] I have a GitHub account
+- [X] Git is installed (`git --version` works)
+- [X] I generated an SSH key
+- [X] I added my public key to GitHub
+- [X] `ssh -T git@github.com` shows my username
 
 ### What's Next?
 
