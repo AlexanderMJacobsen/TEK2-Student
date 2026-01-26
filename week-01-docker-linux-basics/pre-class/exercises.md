@@ -488,18 +488,18 @@ Error response from daemon: driver failed programming external connectivity: Bin
 Before coming to class, ensure you can check ALL of these:
 
 **Docker:**
-- [ ] Docker is installed and running
-- [ ] `docker --version` shows a version number
-- [ ] `docker run hello-world` works
-- [ ] You successfully ran an interactive Ubuntu container
-- [ ] You successfully ran nginx and saw the welcome page in your browser
-- [ ] You know how to stop containers
+- [X] Docker is installed and running
+- [X] `docker --version` shows a version number
+- [X] `docker run hello-world` works
+- [X] You successfully ran an interactive Ubuntu container
+- [X] You successfully ran nginx and saw the welcome page in your browser
+- [X] You know how to stop containers
 
 **GitHub:**
-- [ ] You have a GitHub account
-- [ ] Git is installed (`git --version` works)
-- [ ] You generated an SSH key
-- [ ] `ssh -T git@github.com` shows your username
+- [X] You have a GitHub account
+- [X] Git is installed (`git --version` works)
+- [X] You generated an SSH key
+- [X] `ssh -T git@github.com` shows your username
 
 If any of these aren't working, **note the exact error message** and we'll troubleshoot at the start of class.
 
