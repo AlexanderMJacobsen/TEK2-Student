@@ -56,7 +56,7 @@ You should see a prompt like: `root@abc123:/#`
    ```bash
    pwd
    ```
-   What directory are you in? _______________
+   What directory are you in? _root_
 
 2. List what's in the current directory:
    ```bash
@@ -171,10 +171,10 @@ You should see a prompt like: `root@abc123:/#`
    ```
 
 ### Self-check
-- [ ] I can navigate using `cd` and verify with `pwd`
-- [ ] I can create files and directories
-- [ ] I understand the difference between `>` (overwrite) and `>>` (append)
-- [ ] I can copy, move, and delete files
+- [X] I can navigate using `cd` and verify with `pwd`
+- [X] I can create files and directories
+- [X] I understand the difference between `>` (overwrite) and `>>` (append)
+- [X] I can copy, move, and delete files
 
 ### Don't exit yet!
 Keep this container running. We'll use it for comparison later.
@@ -287,7 +287,7 @@ Now let's see what happens when we remove the container.
    docker exec -it mysql-class mysql -uroot -pstudent123 -e "SHOW DATABASES;"
    ```
 
-   **What happened to the `school` database?** _______________
+   **What happened to the `school` database?** Deleted the database school, as we run a new fresh container with no 'recipe' for creating the school database
 
 ### Key Insight
 
@@ -299,10 +299,10 @@ The database disappeared because:
 **How do we solve this?** We'll learn about **volumes** in Week 2!
 
 ### Self-check
-- [ ] I successfully ran MySQL in a container
-- [ ] I created a database and verified it existed
-- [ ] I understand why the data disappeared when I removed the container
-- [ ] I understand: `docker run` = NEW container, `docker rm` = delete everything
+- [X] I successfully ran MySQL in a container
+- [X] I created a database and verified it existed
+- [X] I understand why the data disappeared when I removed the container
+- [X] I understand: `docker run` = NEW container, `docker rm` = delete everything
 
 ---
 
@@ -337,7 +337,7 @@ Practice running various Docker images and understand image differences.
    ```bash
    bash
    ```
-   What happened? _______________
+   What happened? bash not found
 
 4. Check the OS:
    ```bash
@@ -403,7 +403,8 @@ Practice running various Docker images and understand image differences.
 docker ps -a
 ```
 
-How many containers have you created today? _______________
+How many containers have you created today? An ubuntu, mysql, python, redis, alpine.
+Some of them I had created multiple times.
 
 ### Clean Up (Optional)
 
@@ -413,10 +414,10 @@ docker container prune
 ```
 
 ### Self-check
-- [ ] I understand that different images have different sizes and tools
-- [ ] I ran Python inside a container without installing Python
-- [ ] I know the `--rm` flag auto-removes containers
-- [ ] I know how to clean up old containers
+- [X] I understand that different images have different sizes and tools
+- [X] I ran Python inside a container without installing Python
+- [X] I know the `--rm` flag auto-removes containers
+- [X] I know how to clean up old containers
 
 ---
 
@@ -444,7 +445,7 @@ Serve a custom HTML page using nginx.
 
 4. Replace it with our own content:
    ```bash
-   docker exec -it web-bonus sh -c 'echo "<h1>Hello from Week 1!</h1><p>I made this in Docker class.</p>" > /usr/share/nginx/html/index.html'
+   docker exec -it web-bonus sh -c "echo '<h1>Hello from Week 1!</h1><p>I made this in Docker class.</p>' > /usr/share/nginx/html/index.html"
    ```
 
 5. Visit http://localhost:8080 in your browser
