@@ -52,6 +52,8 @@ This tutorial assumes your project is organized like this (the standard Spring B
 ```
 your-project/
 ├── pom.xml                    ← Spring Boot project at root
+├── Dockerfile                 ← Production image (created in Step 1)
+├── Dockerfile.build           ← Dev build environment (created below)
 ├── src/
 │   └── main/
 │       ├── java/...           ← Your Java code
@@ -77,25 +79,47 @@ A common source of frustration is getting Java, Maven, and `JAVA_HOME` set up co
 The good news: **you don't need any of that.** Docker can be your build environment. Instead of installing JDK 21 and Maven locally, you'll use a Docker container that has everything pre-configured. The build runs inside the container, and the result (your JAR file) appears on your machine.
 
 ```
-┌──────────────────────────────────────────────┐
-│  Docker container (maven:3.9-eclipse-temurin-21)  │
-│                                               │
-│  ✓ JDK 21 — already installed                 │
-│  ✓ Maven 3.9 — already installed              │
-│  ✓ JAVA_HOME — already configured             │
-│                                               │
-│  Your project files are mounted into /app     │
-│  Build output goes to target/ on your machine │
-└──────────────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│  Dev build container                      │
+│                                           │
+│  ✓ JDK 21 — already installed            │
+│  ✓ Maven 3.9.12 — already installed      │
+│  ✓ JAVA_HOME — already configured        │
+│                                           │
+│  Your project files are mounted into /app │
+│  Build output goes to target/ on your     │
+│  machine                                  │
+└──────────────────────────────────────────┘
 ```
 
-You'll set this up as part of the Docker Compose file in Step 2. Once it's ready, you'll build your project like this:
+Create a file called `Dockerfile.build` in your project root:
+
+```dockerfile
+FROM eclipse-temurin:21-jdk
+
+# Install Maven 3.9.12
+ENV MAVEN_VERSION=3.9.12
+ENV MAVEN_HOME=/opt/maven
+ENV PATH="${MAVEN_HOME}/bin:${PATH}"
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl && \
+    curl -fsSL https://dlcdn.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
+      | tar xz -C /opt && \
+    mv /opt/apache-maven-${MAVEN_VERSION} ${MAVEN_HOME} && \
+    apt-get remove -y curl && apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+```
+
+That's it — JDK 21, Maven 3.9.12, and nothing else. You'll wire this into Docker Compose in Step 2. Once it's ready, you'll build your project like this:
 
 ```bash
 docker compose run --rm build mvn clean package
 ```
 
-That's it. No Java installation, no `JAVA_HOME` issues, and everyone on the team gets the exact same build environment.
+No Java installation, no `JAVA_HOME` issues, and everyone on the team gets the exact same build environment.
 
 > **Can I still use my local Java?** Of course. If you have Java and Maven working on your machine, you can keep using `mvn clean package` directly. The Docker build environment is there for when things go wrong or when you want a guaranteed consistent setup.
 
@@ -232,7 +256,9 @@ Create `docker-compose.yml` in your project root:
 ```yaml
 services:
   build:
-    image: maven:3.9-eclipse-temurin-21
+    build:
+      context: .
+      dockerfile: Dockerfile.build
     working_dir: /app
     volumes:
       - .:/app
@@ -267,7 +293,7 @@ volumes:
 
 > **Replace `mydb`** with the database name you used in `application.properties`.
 
-**The `build` service** is your portable build environment. It mounts your project directory into the container and caches Maven dependencies so they're only downloaded once. The `profiles: ["tools"]` line means it won't start when you run `docker compose up` — it's only used when you explicitly call it:
+**The `build` service** uses your `Dockerfile.build` to create a container with JDK 21 and Maven. It mounts your project directory into the container and caches Maven dependencies so they're only downloaded once. The `profiles: ["tools"]` line means it won't start when you run `docker compose up` — it's only used when you explicitly call it:
 
 ```bash
 # Build your project (same as mvn clean package, but inside Docker)
