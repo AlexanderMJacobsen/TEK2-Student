@@ -844,10 +844,24 @@ You should see your change live on the server. No manual SSH, no manual deployme
 
 ## How It All Fits Together
 
-Here's the complete flow from code change to live application:
+### The full cycle
+
+Here's the complete flow from editing code to seeing your change live:
 
 ```
-You push code to GitHub
+You edit code locally
+        │
+        ▼
+docker compose run --rm build mvn test     ← verify it compiles and tests pass
+        │
+        ▼
+docker compose up --build                   ← run the full stack locally
+        │                                     (app + database)
+        ▼
+Open http://localhost:8080                  ← check it works
+        │
+        ▼
+git add, git commit, git push               ← triggers the pipeline
         │
         ▼
 ┌──────────────────────────────────────────────┐
@@ -874,8 +888,21 @@ You push code to GitHub
 └──────────────────────────────────────────────┘
         │
         ▼
-  Users visit http://YOUR_SERVER_IP
+  Users visit http://YOUR_SERVER_IP             ← live in ~3-5 minutes
 ```
+
+### Where secrets live
+
+Passwords and keys are spread across three places — none of them end up in Git:
+
+| Secret | Where it lives | Purpose |
+|--------|---------------|---------|
+| `DB_PASSWORD` | `.env` in your project root (git-ignored) | MySQL password for local development |
+| `DB_PASSWORD` | `~/my-app/.env` on Azure VM | MySQL password for production |
+| `SERVER_IP` | GitHub Secrets | Your VM's public IP address |
+| `SERVER_USER` | GitHub Secrets | SSH username (`azureuser`) |
+| `SSH_PRIVATE_KEY` | GitHub Secrets | Deploy key for automated SSH access |
+| GitHub PAT | Docker login on Azure VM | Allows the server to pull images from GHCR |
 
 ---
 
