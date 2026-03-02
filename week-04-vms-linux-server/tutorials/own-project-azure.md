@@ -1,0 +1,1129 @@
+# Tutorial: Deploy Your Own Project with CI/CD on Azure
+
+This tutorial walks you through setting up a complete CI/CD pipeline for **your own project** — from writing Dockerfiles to fully automated deployment on your Azure VM.
+
+By the end, every push to `main` will automatically build, test, and deploy your application.
+
+**Estimated time: 90-120 minutes**
+
+---
+
+## What You'll Build
+
+A fully automated pipeline that deploys your project — a Java/Spring Boot backend, an HTML/CSS/JS frontend, and a PostgreSQL database — to your Azure VM.
+
+```
+┌─────────────────────────────────────────────────┐
+│  Your Azure VM                                   │
+│                                                   │
+│  ┌───────────┐   ┌───────────┐   ┌───────────┐  │
+│  │ frontend  │──▶│    app    │──▶│    db      │  │
+│  │  (nginx)  │   │ (Spring)  │   │(PostgreSQL)│  │
+│  │  port 80  │   │ port 8080 │   │ port 5432  │  │
+│  └───────────┘   └───────────┘   └───────────┘  │
+│       ▲                                           │
+│       │ port 80                                   │
+└───────┼───────────────────────────────────────────┘
+        │
+    Internet
+```
+
+Only the frontend is exposed to the internet. It forwards `/api/` requests to the backend internally using Nginx as a reverse proxy.
+
+---
+
+## Prerequisites
+
+Before starting, you should have:
+
+- [ ] A GitHub repository containing your project code
+- [ ] A Java/Spring Boot backend (with a `pom.xml`)
+- [ ] An HTML/CSS/JS frontend
+- [ ] An Azure VM with SSH access and Docker installed — if you don't have one yet, see [Appendix A](#appendix-a-azure-vm-setup) at the bottom of this tutorial
+
+---
+
+## Project Structure
+
+This tutorial assumes your project is organized like this (the same pattern as the todo-app):
+
+```
+your-project/
+├── pom.xml                    ← Spring Boot backend at root
+├── src/
+│   └── main/
+│       ├── java/...           ← Your Java code
+│       └── resources/
+│           └── application.properties
+├── frontend/
+│   ├── index.html             ← Your HTML/CSS/JS frontend
+│   ├── style.css
+│   └── script.js
+└── README.md
+```
+
+> **Different structure?** If your backend is in a `backend/` subfolder instead of the root, you'll need to adjust some paths. The tutorial will note where.
+
+---
+
+## Step 1: Dockerize Your Backend (~15 minutes)
+
+Your Spring Boot application needs a `Dockerfile` that builds the Java code and creates a runnable container image.
+
+### 1.1: Check your pom.xml
+
+Before creating the Dockerfile, make sure your `pom.xml` includes the Spring Boot Maven plugin. This is what creates the executable JAR file. Open your `pom.xml` and look for this in the `<build>` section:
+
+```xml
+<build>
+    <plugins>
+        <plugin>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-maven-plugin</artifactId>
+        </plugin>
+    </plugins>
+</build>
+```
+
+If it's missing, add it. Without this plugin, Maven creates a regular JAR that can't be run on its own.
+
+### 1.2: Configure database connection
+
+Your `src/main/resources/application.properties` needs to be configured so Spring Boot can connect to the PostgreSQL database. Add or update these lines:
+
+```properties
+spring.datasource.url=${DATABASE_URL:jdbc:postgresql://localhost:5432/mydb}
+spring.datasource.username=${DATABASE_USERNAME:postgres}
+spring.datasource.password=${DATABASE_PASSWORD:postgres}
+spring.jpa.hibernate.ddl-auto=update
+```
+
+> **What does this mean?** The `${DATABASE_URL:jdbc:postgresql://...}` syntax means "use the `DATABASE_URL` environment variable if it exists, otherwise fall back to the default value." This way, the same code works both locally and in Docker.
+
+Replace `mydb` with whatever you want to call your database.
+
+### 1.3: Create the backend Dockerfile
+
+Create a file called `Dockerfile` in your project root (next to `pom.xml`):
+
+```dockerfile
+# Stage 1: Build the application
+FROM maven:3.9-eclipse-temurin-21 AS build
+WORKDIR /app
+COPY pom.xml .
+COPY src ./src
+RUN mvn clean package -DskipTests
+
+# Stage 2: Run the application
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+COPY --from=build /app/target/*.jar app.jar
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "app.jar"]
+```
+
+**What each line does:**
+
+| Line | Purpose |
+|------|---------|
+| `FROM maven:3.9-eclipse-temurin-21 AS build` | Start with a Maven + JDK image for building |
+| `COPY pom.xml .` then `COPY src ./src` | Copy your source code into the build container |
+| `RUN mvn clean package -DskipTests` | Compile your code and create the JAR file |
+| `FROM eclipse-temurin:21-jre-alpine` | Start a fresh, small image with only the JRE (no build tools) |
+| `COPY --from=build /app/target/*.jar app.jar` | Copy the built JAR from the build stage |
+| `ENTRYPOINT ["java", "-jar", "app.jar"]` | Run the application when the container starts |
+
+> **Why two stages?** The build stage contains Maven, the full JDK, and all your source code — about 800 MB. The runtime stage only has the JRE and your JAR — about 200 MB. Your server doesn't need the build tools.
+
+### 1.4: Test the backend Dockerfile locally
+
+```bash
+docker build -t my-app .
+docker run --rm -p 8080:8080 my-app
+```
+
+The application will probably crash because there's no database — that's fine! You should see Spring Boot starting up before the database error. If you see `Started MyApplication in X seconds`, your Dockerfile works. Press `Ctrl+C` to stop.
+
+> **If the build fails:** Check that your `pom.xml` is valid and that `mvn clean package` works when you run it directly on your machine.
+
+---
+
+## Step 2: Dockerize Your Frontend (~10 minutes)
+
+Your HTML/CSS/JS frontend will be served by Nginx, which also acts as a reverse proxy — forwarding API requests to the backend.
+
+### 2.1: Create the Nginx configuration
+
+Create a file called `nginx.conf` inside your `frontend/` folder:
+
+```nginx
+server {
+    listen 80;
+
+    # Serve static files (HTML, CSS, JS)
+    location / {
+        root /usr/share/nginx/html;
+        index index.html;
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Forward API requests to the backend
+    location /api/ {
+        proxy_pass http://app:8080/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+> **What is a reverse proxy?** When your JavaScript makes a request to `/api/todos`, Nginx intercepts it and forwards it to `http://app:8080/api/todos` — the Spring Boot container. The browser never talks directly to the backend. The name `app` comes from the Docker Compose service name (you'll set that up in Step 3).
+
+### 2.2: Create a .dockerignore for the frontend
+
+Create a file called `.dockerignore` inside your `frontend/` folder:
+
+```
+Dockerfile
+nginx.conf
+```
+
+This prevents the Dockerfile and nginx.conf from being copied into the web-served directory.
+
+### 2.3: Create the frontend Dockerfile
+
+Create a file called `Dockerfile` inside your `frontend/` folder:
+
+```dockerfile
+FROM nginx:alpine
+RUN rm /etc/nginx/conf.d/default.conf
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY . /usr/share/nginx/html/
+EXPOSE 80
+```
+
+This copies all your frontend files (HTML, CSS, JS, images — everything in `frontend/`) into Nginx's web directory.
+
+> **Subfolders work fine.** If your frontend has folders like `css/`, `js/`, or `images/`, they'll be copied along with everything else.
+
+### 2.4: Test the frontend Dockerfile locally
+
+```bash
+cd frontend
+docker build -t my-frontend .
+docker run --rm -p 80:80 my-frontend
+```
+
+Open `http://localhost` in your browser. You should see your HTML page. API requests won't work yet (the backend isn't connected), but the page itself should load.
+
+Press `Ctrl+C` to stop. Go back to your project root: `cd ..`
+
+---
+
+## Step 3: Create Docker Compose Files (~10 minutes)
+
+You'll create two compose files:
+- **`docker-compose.yml`** — for local development (builds from your source code)
+- **`docker-compose.prod.yml`** — for production (pulls pre-built images from GitHub)
+
+### 3.1: Development compose file
+
+Create `docker-compose.yml` in your project root:
+
+```yaml
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: mydb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  app:
+    build: .
+    environment:
+      DATABASE_URL: jdbc:postgresql://db:5432/mydb
+      DATABASE_USERNAME: postgres
+      DATABASE_PASSWORD: postgres
+    depends_on:
+      - db
+    ports:
+      - "8080:8080"
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
+```
+
+> **Replace `mydb`** with the database name you used in `application.properties`.
+
+Test it:
+
+```bash
+docker compose up --build
+```
+
+Open `http://localhost` — your full application should be running! The frontend serves your HTML, API requests are proxied to the backend, and the backend connects to PostgreSQL.
+
+Press `Ctrl+C` to stop.
+
+### 3.2: Production compose file
+
+Create `docker-compose.prod.yml` in your project root:
+
+```yaml
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: mydb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  app:
+    image: ghcr.io/YOUR_USERNAME/YOUR_PROJECT:latest
+    environment:
+      DATABASE_URL: jdbc:postgresql://db:5432/mydb
+      DATABASE_USERNAME: postgres
+      DATABASE_PASSWORD: ${DB_PASSWORD:-postgres}
+    depends_on:
+      - db
+
+  frontend:
+    image: ghcr.io/YOUR_USERNAME/YOUR_PROJECT-frontend:latest
+    ports:
+      - "80:80"
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
+```
+
+**Replace these placeholders:**
+
+| Placeholder | Replace with | Example |
+|-------------|-------------|---------|
+| `YOUR_USERNAME` | Your GitHub username (lowercase!) | `johndoe` |
+| `YOUR_PROJECT` | Your repository name (lowercase!) | `my-cool-app` |
+| `mydb` | Your database name | `mydb` |
+
+> **Why lowercase?** GitHub Container Registry (GHCR) requires image names to be lowercase. If your GitHub username is `JohnDoe`, use `johndoe` in the image names.
+
+**What's different from the dev file?**
+
+| | Development | Production |
+|---|---|---|
+| Backend | `build: .` (builds from source) | `image: ghcr.io/...` (pulls pre-built image) |
+| Frontend | `build: ./frontend` (builds from source) | `image: ghcr.io/...` (pulls pre-built image) |
+| DB password | Hardcoded `postgres` | `${DB_PASSWORD:-postgres}` (from `.env` file) |
+| Ports | All services expose ports | Only frontend exposes port 80 |
+
+---
+
+## Step 4: Create the GitHub Actions Workflow (~15 minutes)
+
+This is the heart of the CI/CD pipeline. You'll create a workflow file that GitHub runs automatically every time you push to `main`.
+
+### 4.1: Create the workflow file
+
+Create the file `.github/workflows/ci.yml` (you'll need to create the `.github/workflows/` directories):
+
+```bash
+mkdir -p .github/workflows
+```
+
+Then create `.github/workflows/ci.yml` with this content:
+
+```yaml
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Build and test with Maven
+        run: mvn clean package
+
+  build-and-push-backend:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/YOUR_USERNAME/YOUR_PROJECT:latest
+            ghcr.io/YOUR_USERNAME/YOUR_PROJECT:${{ github.sha }}
+
+  build-and-push-frontend:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ghcr.io/YOUR_USERNAME/YOUR_PROJECT-frontend:latest
+            ghcr.io/YOUR_USERNAME/YOUR_PROJECT-frontend:${{ github.sha }}
+
+  deploy:
+    needs: [build-and-push-backend, build-and-push-frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Azure VM
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ~/my-app
+
+            # Pull the latest images
+            docker compose -f docker-compose.prod.yml pull
+
+            # Restart with the new images
+            docker compose -f docker-compose.prod.yml up -d
+
+            # Clean up old images
+            docker image prune -f
+```
+
+**Replace `YOUR_USERNAME` and `YOUR_PROJECT`** with your lowercase GitHub username and repository name — in all four image tag lines.
+
+> **Important:** Also change `cd ~/my-app` in the deploy script to match the directory name you'll create on your server in Step 7.
+
+### 4.2: How the pipeline works
+
+Here's what happens when you push to `main`:
+
+```
+                    build-and-test
+                   (compile + tests)
+                         │
+              ┌──────────┴──────────┐
+              ▼                     ▼
+   build-and-push-backend   build-and-push-frontend
+   (Docker image → GHCR)    (Docker image → GHCR)
+              │                     │
+              └──────────┬──────────┘
+                         ▼
+                       deploy
+                (SSH → pull → restart)
+```
+
+| Job | What it does |
+|-----|-------------|
+| **build-and-test** | Checks out your code, installs JDK 21, runs `mvn clean package` (compiles + runs tests) |
+| **build-and-push-backend** | Builds a Docker image from your root `Dockerfile`, pushes it to GHCR |
+| **build-and-push-frontend** | Builds a Docker image from `frontend/Dockerfile`, pushes it to GHCR |
+| **deploy** | SSHes into your Azure VM, pulls the new images, restarts the containers |
+
+The backend and frontend images are built **in parallel** after tests pass. The deploy job waits for both to finish.
+
+### 4.3: Verify your image names match
+
+The image names must be **exactly the same** in three places:
+
+1. `.github/workflows/ci.yml` (the `tags:` lines)
+2. `docker-compose.prod.yml` (the `image:` lines)
+3. What you log in to pull on the server
+
+Quick check:
+
+```bash
+# This should show only YOUR username/project, not the placeholders
+grep -r "ghcr.io/" .github/ docker-compose.prod.yml
+```
+
+---
+
+## Step 5: Set Up SSH Keys for Deployment (~15 minutes)
+
+The deploy job needs to SSH into your Azure VM. You'll create a **dedicated deploy key** — a separate SSH key used only by GitHub Actions.
+
+### 5.1: Why a dedicated key?
+
+You probably already have an SSH key (`~/.ssh/id_ed25519`) that you use to connect to your VM. So why create a new one?
+
+- **Separation of concerns:** If the deploy key is compromised, you can revoke it without losing your personal SSH access
+- **Principle of least privilege:** The deploy key only needs to exist on GitHub and on the server — nowhere else
+- **Easy to rotate:** You can regenerate a deploy key without disrupting your day-to-day SSH access
+
+### 5.2: Understanding SSH key pairs
+
+An SSH key pair consists of two files:
+
+```
+┌─────────────────┐           ┌──────────────────┐
+│   PRIVATE KEY   │           │   PUBLIC KEY      │
+│                 │           │                   │
+│  deploy_key     │           │  deploy_key.pub   │
+│                 │           │                   │
+│  Stays secret!  │           │  Safe to share    │
+│  Like a         │           │  Like a           │
+│  password       │           │  lock             │
+└─────────────────┘           └──────────────────┘
+     Goes to:                      Goes to:
+  GitHub Secrets               Your Azure VM
+  (SSH_PRIVATE_KEY)            (~/.ssh/authorized_keys)
+```
+
+The private key proves your identity. The public key is the lock that only the private key can open.
+
+### 5.3: Generate the deploy key
+
+On your **local machine**, run:
+
+```bash
+ssh-keygen -t ed25519 -C "github-actions-deploy" -f ~/.ssh/deploy_key -N ""
+```
+
+| Flag | Meaning |
+|------|---------|
+| `-t ed25519` | Use the Ed25519 algorithm (modern, secure, fast) |
+| `-C "github-actions-deploy"` | A comment to identify this key's purpose |
+| `-f ~/.ssh/deploy_key` | Save to this file (not the default `id_ed25519`) |
+| `-N ""` | No passphrase (GitHub Actions can't type a password) |
+
+This creates two files:
+- `~/.ssh/deploy_key` — the private key
+- `~/.ssh/deploy_key.pub` — the public key
+
+### 5.4: Add the public key to your Azure VM
+
+You need to add the public key to your server so it accepts connections from GitHub Actions.
+
+First, display the public key:
+
+```bash
+cat ~/.ssh/deploy_key.pub
+```
+
+It looks something like:
+
+```
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... github-actions-deploy
+```
+
+Now SSH into your server (using your normal key) and add the deploy key:
+
+```bash
+ssh azureuser@YOUR_SERVER_IP
+```
+
+Once on the server:
+
+```bash
+echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI..." >> ~/.ssh/authorized_keys
+```
+
+(Paste the actual public key you copied above.)
+
+> **`>>` not `>`!** Using `>>` appends to the file. Using `>` would overwrite the file, deleting your personal key and locking you out!
+
+Verify it was added:
+
+```bash
+cat ~/.ssh/authorized_keys
+```
+
+You should see at least two keys: your personal key and the new deploy key.
+
+Then exit the server:
+
+```bash
+exit
+```
+
+### 5.5: Test the deploy key
+
+Before configuring GitHub, verify the key works from your local machine:
+
+```bash
+ssh -i ~/.ssh/deploy_key azureuser@YOUR_SERVER_IP echo "Deploy key works!"
+```
+
+You should see: `Deploy key works!`
+
+**If it fails, check these common issues:**
+
+| Problem | Fix |
+|---------|-----|
+| `Permission denied (publickey)` | The public key wasn't added correctly to `authorized_keys`. SSH in with your normal key and check the file. |
+| `WARNING: UNPROTECTED PRIVATE KEY FILE!` | Run `chmod 600 ~/.ssh/deploy_key` — the private key file must not be readable by others. |
+| `Connection refused` | Is the VM running? Check Azure Portal. |
+| `Connection timed out` | Is the IP correct? Is port 22 open in Azure firewall? |
+
+---
+
+## Step 6: Configure GitHub Secrets (~5 minutes)
+
+GitHub Secrets are encrypted variables that only GitHub Actions can read. You'll store your server connection details here.
+
+### 6.1: Navigate to secrets
+
+1. Go to your repository on GitHub
+2. Click **Settings** (top menu, far right)
+3. In the left sidebar, click **Secrets and variables** → **Actions**
+4. Click **"New repository secret"**
+
+### 6.2: Add three secrets
+
+Add each of these one at a time:
+
+**Secret 1: `SERVER_IP`**
+
+| Field | Value |
+|-------|-------|
+| Name | `SERVER_IP` |
+| Secret | Your Azure VM's public IP address (e.g., `20.234.123.45`) |
+
+Click **"Add secret"**.
+
+**Secret 2: `SERVER_USER`**
+
+| Field | Value |
+|-------|-------|
+| Name | `SERVER_USER` |
+| Secret | `azureuser` (or whatever username you set when creating the VM) |
+
+Click **"Add secret"**.
+
+**Secret 3: `SSH_PRIVATE_KEY`**
+
+| Field | Value |
+|-------|-------|
+| Name | `SSH_PRIVATE_KEY` |
+| Secret | The **entire** contents of `~/.ssh/deploy_key` |
+
+To get the private key:
+
+```bash
+cat ~/.ssh/deploy_key
+```
+
+Copy **everything** — including the `-----BEGIN OPENSSH PRIVATE KEY-----` and `-----END OPENSSH PRIVATE KEY-----` lines. Make sure there's no extra whitespace or missing newlines.
+
+Click **"Add secret"**.
+
+### 6.3: Verify
+
+After adding all three, you should see them listed under "Repository secrets":
+
+```
+SERVER_IP         Updated just now
+SERVER_USER       Updated just now
+SSH_PRIVATE_KEY   Updated just now
+```
+
+You can't view the values after saving (that's the point of secrets), but you can update them if needed.
+
+---
+
+## Step 7: Prepare Your Azure VM (~15 minutes)
+
+Your server needs Docker (you should already have this) and a few things set up before the first deployment.
+
+### 7.1: Verify Docker is installed
+
+SSH into your server:
+
+```bash
+ssh azureuser@YOUR_SERVER_IP
+```
+
+Check Docker:
+
+```bash
+docker --version
+sudo systemctl status docker
+```
+
+If Docker isn't installed, follow the [Docker installation exercise](../class/exercises.md#exercise-3-install-docker-20-minutes) from the class materials.
+
+### 7.2: Authenticate with GitHub Container Registry
+
+Your server needs permission to pull your Docker images from GHCR. You'll create a Personal Access Token (PAT) for this.
+
+1. Go to GitHub → click your avatar → **Settings**
+2. Scroll down in the left sidebar → **Developer settings**
+3. **Personal access tokens** → **Tokens (classic)**
+4. Click **"Generate new token (classic)"**
+5. Configure:
+
+| Setting | Value |
+|---------|-------|
+| Note | `server-docker-access` |
+| Expiration | 90 days (or longer) |
+| Scopes | Check **`read:packages`** only |
+
+6. Click **"Generate token"**
+7. **Copy the token immediately** — you won't see it again!
+
+Now log in on your server:
+
+```bash
+echo "YOUR_TOKEN" | docker login ghcr.io -u YOUR_USERNAME --password-stdin
+```
+
+Replace `YOUR_TOKEN` with the token you just copied and `YOUR_USERNAME` with your GitHub username.
+
+You should see: `Login Succeeded`
+
+### 7.3: Create the app directory and compose file
+
+The deploy job expects to find a production compose file on the server. Create the directory:
+
+```bash
+mkdir -p ~/my-app
+```
+
+> **Match the directory name** to what you used in the `cd ~/my-app` line in your workflow file (Step 4).
+
+Create the compose file:
+
+```bash
+nano ~/my-app/docker-compose.prod.yml
+```
+
+Paste the contents of your `docker-compose.prod.yml` (from Step 3.2) — with your actual username and project name already filled in.
+
+Save with `Ctrl+O`, Enter, `Ctrl+X`.
+
+### 7.4: (Optional) Set a real database password
+
+For a basic student project the default password is fine, but if you want to be more secure:
+
+```bash
+echo "DB_PASSWORD=$(openssl rand -base64 24)" > ~/my-app/.env
+cat ~/my-app/.env   # See what password was generated
+```
+
+The `${DB_PASSWORD:-postgres}` syntax in the compose file will pick up the password from this `.env` file.
+
+### 7.5: Check the firewall
+
+Make sure ports 80 and 443 are open. Check both levels:
+
+**On the server (UFW):**
+
+```bash
+sudo ufw status
+```
+
+If port 80 isn't listed, add it:
+
+```bash
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+```
+
+**On Azure Portal:**
+
+Go to your VM → **Networking** → **Network settings** → Check that inbound rules allow ports 80 and 443. If not, see the [Azure tutorial](azure.md#step-10-open-httphttps-ports).
+
+Now exit the server:
+
+```bash
+exit
+```
+
+---
+
+## Step 8: Push and Deploy (~10 minutes)
+
+Everything is in place. Time to push your changes and watch the magic happen!
+
+### 8.1: Commit and push
+
+From your project directory on your local machine:
+
+```bash
+git add -A
+git commit -m "Add Docker and CI/CD pipeline for Azure deployment"
+git push
+```
+
+### 8.2: Watch the pipeline
+
+1. Go to your repository on GitHub
+2. Click the **"Actions"** tab
+3. You should see a workflow running called "CI/CD"
+
+Click on it to see the live logs for each job:
+
+```
+build-and-test          ✅ (compile + tests)
+       │
+       ├──▶ build-and-push-backend      ⏳ (building Docker image...)
+       │
+       └──▶ build-and-push-frontend     ⏳ (building Docker image...)
+                    │
+                    ▼
+                 deploy               ⏳ (waiting...)
+```
+
+The full pipeline usually takes 3-5 minutes.
+
+### 8.3: Verify it works
+
+Once the pipeline shows all green checkmarks:
+
+**Check the containers on your server:**
+
+```bash
+ssh azureuser@YOUR_SERVER_IP
+docker ps
+```
+
+You should see three containers running:
+
+```
+CONTAINER ID   IMAGE                                              STATUS
+abc123...      ghcr.io/yourname/your-project-frontend:latest      Up 30 seconds
+def456...      ghcr.io/yourname/your-project:latest               Up 35 seconds
+ghi789...      postgres:17                                         Up 40 seconds
+```
+
+**Check in your browser:**
+
+Open `http://YOUR_SERVER_IP` — you should see your application!
+
+---
+
+## Step 9: Test Automatic Deployment (~5 minutes)
+
+The whole point of CI/CD is that changes deploy automatically. Let's verify:
+
+1. Open your `frontend/index.html` locally
+2. Make a visible change (e.g., change a heading or add some text)
+3. Commit and push:
+   ```bash
+   git add frontend/index.html
+   git commit -m "Update frontend heading"
+   git push
+   ```
+4. Go to the **Actions** tab on GitHub — watch the pipeline run
+5. After it completes (~3-5 minutes), refresh `http://YOUR_SERVER_IP`
+
+You should see your change live on the server. No manual SSH, no manual deployment. Push to `main` = automatic deployment.
+
+---
+
+## How It All Fits Together
+
+Here's the complete flow from code change to live application:
+
+```
+You push code to GitHub
+        │
+        ▼
+┌──────────────────────────────────────────────┐
+│          GitHub Actions Pipeline              │
+│                                               │
+│  1. Checkout code                             │
+│  2. Build Java app with Maven                 │
+│  3. Run tests                                 │
+│  4. Build backend Docker image                │
+│  5. Build frontend Docker image               │
+│  6. Push both images to GHCR                  │
+│  7. SSH into your Azure VM                    │
+│  8. Pull the new images                       │
+│  9. Restart all containers                    │
+└──────────────────────────────────────────────┘
+        │
+        ▼
+┌──────────────────────────────────────────────┐
+│            Your Azure VM                      │
+│                                               │
+│  frontend (nginx:80) ──▶ app (8080)          │
+│                            │                  │
+│                            ▼                  │
+│                      db (PostgreSQL)           │
+└──────────────────────────────────────────────┘
+        │
+        ▼
+  Users visit http://YOUR_SERVER_IP
+```
+
+---
+
+## Troubleshooting
+
+### Pipeline fails at "Build and test"
+
+The Java build or tests failed. Click on the failed job to see Maven output.
+
+**Common causes:**
+- Compilation error in your code
+- A test is failing
+- Missing dependency in `pom.xml`
+- Wrong Java version (workflow uses 21 — does your project use a different version?)
+
+**Quick fix:** If you don't have tests yet, your build might still fail if Maven can't compile. Fix the compilation errors first.
+
+### Pipeline fails at "Build and push image"
+
+**Common causes:**
+- `Dockerfile` syntax error — check that the file is in the right location (root for backend, `frontend/` for frontend)
+- GHCR permissions — the workflow needs `packages: write` permission (already set in the workflow file)
+- Image name contains uppercase — use lowercase everywhere
+
+### Pipeline fails at "Deploy to Azure VM"
+
+The SSH connection failed. Check:
+
+1. **SERVER_IP** — is the IP still correct? Azure may have changed it if you stopped/restarted the VM. Check Azure Portal → VM → Overview → Public IP
+2. **SERVER_USER** — is it `azureuser`?
+3. **SSH_PRIVATE_KEY** — did you copy the entire key including the BEGIN/END lines?
+4. **VM is running** — check Azure Portal
+5. **Public key on server** — is the deploy key's public key in `~/.ssh/authorized_keys` on the VM?
+
+**Test SSH manually:**
+
+```bash
+ssh -i ~/.ssh/deploy_key azureuser@YOUR_SERVER_IP echo "Connection works"
+```
+
+### Containers start but the app shows "502 Bad Gateway"
+
+Nginx can reach the backend container, but the backend isn't ready yet.
+
+1. Check backend logs: `docker logs my-app-app-1` (replace `my-app` with your directory name)
+2. Spring Boot takes 15-20 seconds to start — wait and refresh
+3. If it keeps crashing, look for database connection errors in the logs
+
+### "Connection refused" in browser
+
+1. Is port 80 open? Check both Azure Portal firewall AND `sudo ufw status` on the server
+2. Is the frontend container running? `docker ps`
+3. Are you using `http://` not `https://`?
+
+### Backend can't connect to database
+
+Check that the database name in `application.properties`, `docker-compose.prod.yml`, and the environment variables all match.
+
+```bash
+# On the server, check the running compose config
+cd ~/my-app
+docker compose -f docker-compose.prod.yml config
+```
+
+### "Image not found" or "Manifest unknown"
+
+1. Did the build-and-push jobs succeed in GitHub Actions?
+2. Go to your GitHub profile → **Packages** — do you see your images?
+3. Are the image names in `docker-compose.prod.yml` on the server **exactly** the same as in `ci.yml`?
+4. Did you run `docker login ghcr.io` on the server? (Step 7.2)
+
+### Images are private and server can't pull them
+
+By default, GHCR packages may be private. To make them public:
+
+1. Go to your GitHub profile → **Packages**
+2. Click on the package (e.g., `your-project`)
+3. **Package settings** → **Danger Zone** → **Change visibility** → **Public**
+4. Repeat for `your-project-frontend`
+
+Alternatively, keep them private — as long as you ran `docker login ghcr.io` on the server, it can pull private packages.
+
+### Database data is lost after redeploy
+
+Data should survive redeployments — the `pgdata` Docker volume persists across container restarts.
+
+If data is disappearing, make sure the deploy script uses `docker compose up -d` (which only recreates containers with new images) — NOT `docker compose down` first (which can remove volumes).
+
+### Port 80 is already in use on the server
+
+Something else is using port 80. Check what:
+
+```bash
+sudo lsof -i :80
+```
+
+If it's Apache or another web server, stop it:
+
+```bash
+sudo systemctl stop apache2
+sudo systemctl disable apache2
+```
+
+---
+
+## What You've Learned
+
+| Skill | What you did |
+|-------|-------------|
+| **Dockerfiles** | Created multi-stage builds for backend and frontend |
+| **Nginx reverse proxy** | Configured Nginx to serve static files and proxy API requests |
+| **Docker Compose** | Orchestrated a 3-service application (frontend + backend + database) |
+| **GitHub Actions** | Built a CI/CD pipeline from scratch |
+| **GitHub Container Registry** | Pushed and pulled Docker images |
+| **SSH key management** | Created and deployed a dedicated key pair |
+| **Cloud deployment** | Deployed your own project on Azure |
+
+---
+
+## Appendix A: Azure VM Setup
+
+If you don't have an Azure VM yet, here's a quick-start guide. For more detail, see the [full Azure tutorial](azure.md).
+
+### A.1: Create an Azure account
+
+**Students:** Go to [Azure for Students](https://azure.microsoft.com/en-us/free/students/) — you get $100 free credit with your school email, no credit card needed.
+
+**Everyone else:** Go to [Azure Free Account](https://azure.microsoft.com/en-us/free/) — $200 free credit for 30 days.
+
+### A.2: Create a Virtual Machine
+
+1. Sign in to [Azure Portal](https://portal.azure.com)
+2. Search for **"Virtual machines"** → Click **"+ Create"** → **"Azure virtual machine"**
+
+Configure:
+
+| Setting | Value |
+|---------|-------|
+| Resource group | Create new: `tek2-resources` |
+| VM name | `tek2-server` |
+| Region | Choose one where your student credit works ([how to check](azure.md#instance-details)) |
+| Image | Ubuntu Server 22.04 LTS |
+| Size | Standard_B1s (1 vCPU, 1 GB RAM — free tier eligible) |
+| Authentication | SSH public key |
+| Username | `azureuser` |
+| SSH public key | Paste from `~/.ssh/id_ed25519.pub` |
+| Inbound ports | SSH (22) |
+
+3. Click **"Review + create"** → **"Create"**
+4. Wait 1-3 minutes for deployment
+
+### A.3: Get your IP address
+
+Go to your VM in Azure Portal → **Overview** → copy the **Public IP address**.
+
+### A.4: Connect via SSH
+
+```bash
+ssh azureuser@YOUR_PUBLIC_IP
+```
+
+Type `yes` when asked about the fingerprint.
+
+### A.5: Install Docker
+
+Run these commands on your server:
+
+```bash
+# Update packages
+sudo apt update && sudo apt upgrade -y
+
+# Install Docker
+sudo apt install -y docker.io docker-compose-v2
+
+# Add your user to the docker group (so you don't need sudo)
+sudo usermod -aG docker $USER
+
+# Log out and back in for the group change to take effect
+exit
+```
+
+SSH back in:
+
+```bash
+ssh azureuser@YOUR_PUBLIC_IP
+```
+
+Verify:
+
+```bash
+docker --version
+docker run hello-world
+```
+
+### A.6: Open ports 80 and 443
+
+**On the server:**
+
+```bash
+sudo ufw allow OpenSSH
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw enable
+```
+
+Type `y` when asked.
+
+**On Azure Portal:**
+
+1. Go to your VM → **Networking** → **Network settings**
+2. Click **"Create port rule"** → **"Inbound port rule"**
+3. Add port 80 (name: `AllowHTTP`)
+4. Repeat for port 443 (name: `AllowHTTPS`)
+
+You're ready! Go back to [Step 1](#step-1-dockerize-your-backend-15-minutes) to continue with the tutorial.
+
+---
+
+## Optional Next Steps
+
+Want to go further? Try these:
+
+1. **Add a custom domain** — Buy a domain and point it to your server's IP
+2. **Add HTTPS** — Use Let's Encrypt with certbot for free SSL certificates
+3. **Add environment-specific config** — Use different `application.properties` for dev and prod
+4. **Add health checks** — Add Spring Boot Actuator and configure Docker health checks in the compose file
