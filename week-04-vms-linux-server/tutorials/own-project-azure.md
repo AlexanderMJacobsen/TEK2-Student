@@ -33,6 +33,16 @@ Spring Boot serves everything: your static files (HTML, CSS, JS) and your API en
 
 ---
 
+## Example Project
+
+There's a complete, working example of what you'll build in this tutorial:
+
+**[github.com/tgrundtvig/tek2-example-project](https://github.com/tgrundtvig/tek2-example-project)**
+
+It's a minimal Spring Boot app with a single API endpoint, a static HTML frontend, and all the Docker and CI/CD files already set up. Use it as a reference if you get stuck, or clone it to see the full setup running before you start on your own project.
+
+---
+
 ## Prerequisites
 
 Before starting, you should have:
