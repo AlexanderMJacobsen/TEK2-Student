@@ -173,7 +173,27 @@ You'll create two compose files:
 - **`docker-compose.yml`** — for local development (builds from your source code)
 - **`docker-compose.prod.yml`** — for production (pulls pre-built images from GitHub)
 
-### 2.1: Development compose file
+Both compose files read the database password from a `.env` file, so the password never ends up in your Git history.
+
+### 2.1: Create a `.env` file
+
+Create a file called `.env` in your project root:
+
+```
+DB_PASSWORD=root
+```
+
+> **You can change `root` to any password you like.** This is just the default for local development.
+
+Now **add `.env` to your `.gitignore`** so it never gets committed:
+
+```bash
+echo ".env" >> .gitignore
+```
+
+> **Why a `.env` file?** Docker Compose automatically reads variables from `.env` in the same directory. By keeping passwords in `.env` and adding it to `.gitignore`, your `docker-compose.yml` can be safely pushed to GitHub without leaking secrets.
+
+### 2.2: Development compose file
 
 Create `docker-compose.yml` in your project root:
 
@@ -183,7 +203,7 @@ services:
     image: mysql:8
     environment:
       MYSQL_DATABASE: mydb
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
     volumes:
       - mysqldata:/var/lib/mysql
     ports:
@@ -194,7 +214,7 @@ services:
     environment:
       DATABASE_URL: jdbc:mysql://db:3306/mydb
       DATABASE_USERNAME: root
-      DATABASE_PASSWORD: root
+      DATABASE_PASSWORD: ${DB_PASSWORD}
     depends_on:
       - db
     ports:
@@ -216,7 +236,7 @@ Open `http://localhost:8080` — your full application should be running! Spring
 
 Press `Ctrl+C` to stop.
 
-### 2.2: Production compose file
+### 2.3: Production compose file
 
 Create `docker-compose.prod.yml` in your project root:
 
@@ -226,7 +246,7 @@ services:
     image: mysql:8
     environment:
       MYSQL_DATABASE: mydb
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
     volumes:
       - mysqldata:/var/lib/mysql
 
@@ -235,7 +255,7 @@ services:
     environment:
       DATABASE_URL: jdbc:mysql://db:3306/mydb
       DATABASE_USERNAME: root
-      DATABASE_PASSWORD: ${DB_PASSWORD:-root}
+      DATABASE_PASSWORD: ${DB_PASSWORD}
     depends_on:
       - db
     ports:
@@ -261,7 +281,6 @@ volumes:
 |---|---|---|
 | App | `build: .` (builds from source) | `image: ghcr.io/...` (pulls pre-built image) |
 | App port | `8080:8080` | `80:8080` (accessible on port 80) |
-| DB password | Hardcoded `root` | `${DB_PASSWORD:-root}` (from `.env` file) |
 | DB port | Exposed (`3306:3306`) | Not exposed (internal only) |
 
 ---
@@ -645,20 +664,20 @@ Create the compose file:
 nano ~/my-app/docker-compose.prod.yml
 ```
 
-Paste the contents of your `docker-compose.prod.yml` (from Step 2.2) — with your actual username and project name already filled in.
+Paste the contents of your `docker-compose.prod.yml` (from Step 2.3) — with your actual username and project name already filled in.
 
 Save with `Ctrl+O`, Enter, `Ctrl+X`.
 
-### 6.4: (Optional) Set a real database password
+### 6.4: Create a `.env` file on the server
 
-For a basic student project the default password is fine, but if you want to be more secure:
+The compose file reads the database password from a `.env` file. Create one:
 
 ```bash
 echo "DB_PASSWORD=$(openssl rand -base64 24)" > ~/my-app/.env
 cat ~/my-app/.env   # See what password was generated
 ```
 
-The `${DB_PASSWORD:-root}` syntax in the compose file will pick up the password from this `.env` file.
+This generates a strong random password for your production database. Docker Compose automatically reads this file and injects `DB_PASSWORD` into the containers.
 
 ### 6.5: Check the firewall
 
