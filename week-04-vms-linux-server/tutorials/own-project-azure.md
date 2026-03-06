@@ -33,10 +33,21 @@ Spring Boot serves everything: your static files (HTML, CSS, JS) and your API en
 
 ---
 
+## Example Project
+
+There's a complete, working example of what you'll build in this tutorial:
+
+**[github.com/tgrundtvig/tek2-week04-example](https://github.com/tgrundtvig/tek2-week04-example)**
+
+It's a minimal Spring Boot app with a single API endpoint, a static HTML frontend, and all the Docker and CI/CD files already set up. Use it as a reference if you get stuck, or clone it to see the full setup running before you start on your own project.
+
+---
+
 ## Prerequisites
 
 Before starting, you should have:
 
+- [ ] **Docker** installed on your local machine — this is the only tool you need. You do **not** need Java, Maven, or anything else installed locally.
 - [ ] A GitHub repository containing your project code
 - [ ] A Java/Spring Boot backend (with a `pom.xml`)
 - [ ] An HTML/CSS/JS frontend (in `src/main/resources/static/`)
@@ -51,6 +62,8 @@ This tutorial assumes your project is organized like this (the standard Spring B
 ```
 your-project/
 ├── pom.xml                    ← Spring Boot project at root
+├── Dockerfile                 ← Production image (created in Step 1)
+├── Dockerfile.build           ← Dev build environment (created below)
 ├── src/
 │   └── main/
 │       ├── java/...           ← Your Java code
@@ -66,6 +79,59 @@ your-project/
 Spring Boot automatically serves files from `src/main/resources/static/` at the root URL. So `static/index.html` becomes available at `http://localhost:8080/`.
 
 > **Frontend in a different folder?** If your HTML files are currently in a separate `frontend/` folder, move them into `src/main/resources/static/`. Spring Boot won't serve them otherwise.
+
+---
+
+## Build Environment: No Java Installation Needed
+
+A common source of frustration is getting Java, Maven, and `JAVA_HOME` set up correctly on your machine. Different versions, different paths, different operating systems — it's a mess.
+
+The good news: **you don't need any of that.** Docker can be your build environment. Instead of installing JDK 21 and Maven locally, you'll use a Docker container that has everything pre-configured. The build runs inside the container, and the result (your JAR file) appears on your machine.
+
+```
+┌──────────────────────────────────────────┐
+│  Dev build container                      │
+│                                           │
+│  ✓ JDK 21 — already installed            │
+│  ✓ Maven 3.9.12 — already installed      │
+│  ✓ JAVA_HOME — already configured        │
+│                                           │
+│  Your project files are mounted into /app │
+│  Build output goes to target/ on your     │
+│  machine                                  │
+└──────────────────────────────────────────┘
+```
+
+Create a file called `Dockerfile.build` in your project root:
+
+```dockerfile
+FROM eclipse-temurin:21-jdk
+
+# Install Maven 3.9.12
+ENV MAVEN_VERSION=3.9.12
+ENV MAVEN_HOME=/opt/maven
+ENV PATH="${MAVEN_HOME}/bin:${PATH}"
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl && \
+    curl -fsSL https://dlcdn.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
+      | tar xz -C /opt && \
+    mv /opt/apache-maven-${MAVEN_VERSION} ${MAVEN_HOME} && \
+    apt-get remove -y curl && apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+```
+
+That's it — JDK 21, Maven 3.9.12, and nothing else. You'll wire this into Docker Compose in Step 2. Once it's ready, you'll build your project like this:
+
+```bash
+docker compose run --rm build mvn clean package
+```
+
+No Java installation, no `JAVA_HOME` issues, and everyone on the team gets the exact same build environment.
+
+> **Can I still use my local Java?** Of course. If you have Java and Maven working on your machine, you can keep using `mvn clean package` directly. The Docker build environment is there for when things go wrong or when you want a guaranteed consistent setup.
 
 ---
 
@@ -163,7 +229,7 @@ docker run --rm -p 8080:8080 my-app
 
 The application will probably crash because there's no database — that's fine! You should see Spring Boot starting up before the database error. If you see `Started MyApplication in X seconds`, your Dockerfile works. Press `Ctrl+C` to stop.
 
-> **If the build fails:** Check that your `pom.xml` is valid and that `mvn clean package` works when you run it directly on your machine.
+> **If the build fails:** Check that your `pom.xml` is valid. You can verify with the build service from Step 2: `docker compose run --rm build mvn clean package` — this runs Maven inside Docker, so Java version and JAVA_HOME issues can't be the cause.
 
 ---
 
@@ -199,6 +265,16 @@ Create `docker-compose.yml` in your project root:
 
 ```yaml
 services:
+  build:
+    build:
+      context: .
+      dockerfile: Dockerfile.build
+    working_dir: /app
+    volumes:
+      - .:/app
+      - maven-cache:/root/.m2
+    profiles: ["tools"]
+
   db:
     image: mysql:8
     environment:
@@ -222,11 +298,27 @@ services:
 
 volumes:
   mysqldata:
+  maven-cache:
 ```
 
 > **Replace `mydb`** with the database name you used in `application.properties`.
 
-Test it:
+**The `build` service** uses your `Dockerfile.build` to create a container with JDK 21 and Maven. It mounts your project directory into the container and caches Maven dependencies so they're only downloaded once. The `profiles: ["tools"]` line means it won't start when you run `docker compose up` — it's only used when you explicitly call it:
+
+```bash
+# Build your project (same as mvn clean package, but inside Docker)
+docker compose run --rm build mvn clean package
+
+# Run tests
+docker compose run --rm build mvn test
+
+# Any Maven command works
+docker compose run --rm build mvn dependency:tree
+```
+
+The `--rm` flag removes the container after it finishes, keeping things tidy. The built JAR file appears in your local `target/` folder as usual.
+
+**Test the full stack:**
 
 ```bash
 docker compose up --build
@@ -788,10 +880,24 @@ You should see your change live on the server. No manual SSH, no manual deployme
 
 ## How It All Fits Together
 
-Here's the complete flow from code change to live application:
+### The full cycle
+
+Here's the complete flow from editing code to seeing your change live:
 
 ```
-You push code to GitHub
+You edit code locally
+        │
+        ▼
+docker compose run --rm build mvn test     ← verify it compiles and tests pass
+        │
+        ▼
+docker compose up --build                   ← run the full stack locally
+        │                                     (app + database)
+        ▼
+Open http://localhost:8080                  ← check it works
+        │
+        ▼
+git add, git commit, git push               ← triggers the pipeline
         │
         ▼
 ┌──────────────────────────────────────────────┐
@@ -818,8 +924,21 @@ You push code to GitHub
 └──────────────────────────────────────────────┘
         │
         ▼
-  Users visit http://YOUR_SERVER_IP
+  Users visit http://YOUR_SERVER_IP             ← live in ~3-5 minutes
 ```
+
+### Where secrets live
+
+Passwords and keys are spread across three places — none of them end up in Git:
+
+| Secret | Where it lives | Purpose |
+|--------|---------------|---------|
+| `DB_PASSWORD` | `.env` in your project root (git-ignored) | MySQL password for local development |
+| `DB_PASSWORD` | `~/my-app/.env` on Azure VM | MySQL password for production |
+| `SERVER_IP` | GitHub Secrets | Your VM's public IP address |
+| `SERVER_USER` | GitHub Secrets | SSH username (`azureuser`) |
+| `SSH_PRIVATE_KEY` | GitHub Secrets | Deploy key for automated SSH access |
+| GitHub PAT | Docker login on Azure VM | Allows the server to pull images from GHCR |
 
 ---
 
